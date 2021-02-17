@@ -182,7 +182,7 @@ export class Zilswap {
     if (this.subscription) {
       this.subscription.stop()
     }
-    const stopped = new Promise(resolve => {
+    const stopped = new Promise<void>(resolve => {
       const checkSubscription = () => {
         if (this.subscription) {
           setTimeout(checkSubscription, 100)
@@ -380,7 +380,7 @@ export class Zilswap {
    *
    * @returns an ObservedTx if IncreaseAllowance was called, null if not.
    */
-  public async approveTokenTransferIfRequired(tokenID: string, amountStrOrBN: BigNumber | string): Promise<ObservedTx | null> {
+  public async approveTokenTransferIfRequired(tokenID: string, amountStrOrBN: BigNumber | string, spenderContractHash: string = this.contractHash): Promise<ObservedTx | null> {
     // Check logged in
     this.checkAppLoadedWithUser()
 
@@ -388,7 +388,7 @@ export class Zilswap {
     const tokenState = await token.contract.getState()
     const allowances = tokenState.allowances || tokenState.allowances_map
     const userAllowances = allowances[this.appState!.currentUser!] || {}
-    const allowance = new BigNumber(userAllowances[this.contractHash] || 0)
+    const allowance = new BigNumber(userAllowances[spenderContractHash] || 0)
     const amount: BigNumber = typeof amountStrOrBN === 'string' ? unitlessBigNumber(amountStrOrBN) : amountStrOrBN
 
     if (allowance.lt(amount)) {
@@ -401,7 +401,7 @@ export class Zilswap {
             {
               vname: 'spender',
               type: 'ByStr20',
-              value: this.contractHash,
+              value: spenderContractHash,
             },
             {
               vname: 'amount',
@@ -666,7 +666,8 @@ export class Zilswap {
     tokenOutID: string,
     tokenInAmountStr: string,
     maxAdditionalSlippage: number = 200,
-    recipientAddress: string | null = null
+    recipientAddress: string | null = null,
+    contract: Contract = this.contract
   ): Promise<ObservedTx> {
     this.checkAppLoadedWithUser()
 
@@ -794,7 +795,7 @@ export class Zilswap {
     }
 
     console.log('sending swap txn..')
-    const swapTxn = await this.callContract(this.contract, txn.transition, txn.args, txn.params, true)
+    const swapTxn = await this.callContract(contract, txn.transition, txn.args, txn.params, true)
 
     if (swapTxn.isRejected()) {
       throw new Error('Submitted transaction was rejected.')
@@ -836,7 +837,8 @@ export class Zilswap {
     tokenOutID: string,
     tokenOutAmountStr: string,
     maxAdditionalSlippage: number = 200,
-    recipientAddress: string | null = null
+    recipientAddress: string | null = null,
+    contract: Contract = this.contract
   ): Promise<ObservedTx> {
     this.checkAppLoadedWithUser()
 
@@ -964,7 +966,7 @@ export class Zilswap {
     }
 
     console.log('sending swap txn..')
-    const swapTxn = await this.callContract(this.contract, txn.transition, txn.args, txn.params, true)
+    const swapTxn = await this.callContract(contract, txn.transition, txn.args, txn.params, true)
 
     if (swapTxn.isRejected()) {
       throw new Error('Submitted transaction was rejected.')
