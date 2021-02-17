@@ -182,7 +182,7 @@ export class Zilswap {
     if (this.subscription) {
       this.subscription.stop()
     }
-    const stopped = new Promise(resolve => {
+    const stopped = new Promise<void>(resolve => {
       const checkSubscription = () => {
         if (this.subscription) {
           setTimeout(checkSubscription, 100)
@@ -666,7 +666,8 @@ export class Zilswap {
     tokenOutID: string,
     tokenInAmountStr: string,
     maxAdditionalSlippage: number = 200,
-    recipientAddress: string | null = null
+    recipientAddress: string | null = null,
+    contract: Contract = this.contract
   ): Promise<ObservedTx> {
     this.checkAppLoadedWithUser()
 
@@ -794,7 +795,7 @@ export class Zilswap {
     }
 
     console.log('sending swap txn..')
-    const swapTxn = await this.callContract(this.contract, txn.transition, txn.args, txn.params, true)
+    const swapTxn = await this.callContract(contract, txn.transition, txn.args, txn.params, true)
 
     if (swapTxn.isRejected()) {
       throw new Error('Submitted transaction was rejected.')
@@ -836,7 +837,8 @@ export class Zilswap {
     tokenOutID: string,
     tokenOutAmountStr: string,
     maxAdditionalSlippage: number = 200,
-    recipientAddress: string | null = null
+    recipientAddress: string | null = null,
+    contract: Contract = this.contract
   ): Promise<ObservedTx> {
     this.checkAppLoadedWithUser()
 
@@ -964,7 +966,7 @@ export class Zilswap {
     }
 
     console.log('sending swap txn..')
-    const swapTxn = await this.callContract(this.contract, txn.transition, txn.args, txn.params, true)
+    const swapTxn = await this.callContract(contract, txn.transition, txn.args, txn.params, true)
 
     if (swapTxn.isRejected()) {
       throw new Error('Submitted transaction was rejected.')
