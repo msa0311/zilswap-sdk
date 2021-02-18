@@ -391,6 +391,7 @@ export class Zilswap {
     const allowance = new BigNumber(userAllowances[spenderContractHash] || 0)
     const amount: BigNumber = typeof amountStrOrBN === 'string' ? unitlessBigNumber(amountStrOrBN) : amountStrOrBN
 
+
     if (allowance.lt(amount)) {
       try {
         console.log('sending increase allowance txn..')
@@ -678,7 +679,7 @@ export class Zilswap {
     const minimumOutput = expectedOutput.times(BASIS).dividedToIntegerBy(BASIS + maxAdditionalSlippage)
     const parsedRecipientAddress = this.parseRecipientAddress(recipientAddress)
 
-    await this.checkAllowedBalance(tokenIn, tokenInAmount)
+    await this.checkAllowedBalance(tokenIn, tokenInAmount, contract.address?.toLowerCase())
 
     const deadline = this.deadlineBlock()
 
@@ -849,7 +850,7 @@ export class Zilswap {
     const maximumInput = expectedInput.times(BASIS + maxAdditionalSlippage).dividedToIntegerBy(BASIS)
     const parsedRecipientAddress = this.parseRecipientAddress(recipientAddress)
 
-    await this.checkAllowedBalance(tokenIn, maximumInput)
+    await this.checkAllowedBalance(tokenIn, maximumInput, contract.address?.toLowerCase())
 
     const deadline = this.deadlineBlock()
 
@@ -1338,7 +1339,7 @@ export class Zilswap {
     return { contract, address, hash, symbol, decimals, whitelisted }
   }
 
-  private async checkAllowedBalance(token: TokenDetails, amount: BigNumber) {
+  private async checkAllowedBalance(token: TokenDetails, amount: BigNumber, contractHash: string = this.contractHash) {
     // Check init
     this.checkAppLoadedWithUser()
     const user = this.appState!.currentUser!
@@ -1363,7 +1364,7 @@ export class Zilswap {
       }
       const allowances = tokenState.allowances || tokenState.allowances_map
       const userAllowances = allowances[user!] || {}
-      const allowance = new BigNumber(userAllowances[this.contractHash] || 0)
+      const allowance = new BigNumber(userAllowances[contractHash] || 0)
       if (allowance.lt(amount)) {
         throw new Error(`Tokens need to be approved first.
         Required: ${this.toUnit(token.hash, amount.toString()).toString()},
