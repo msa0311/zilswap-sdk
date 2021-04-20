@@ -9,7 +9,8 @@ import { BigNumber } from 'bignumber.js'
 import { Mutex } from 'async-mutex'
 
 import { APIS, WSS, CONTRACTS, CHAIN_VERSIONS, BASIS, Network, ZIL_HASH } from './constants'
-import { toPositiveQa } from './utils'
+import { unitlessBigNumber, toPositiveQa, isLocalStorageAvailable } from './utils'
+import { sendBatchRequest, BatchRequest, BatchResponse } from './batch'
 
 BigNumber.config({ EXPONENTIAL_AT: 1e9 }) // never!
 
@@ -17,6 +18,7 @@ export type Options = {
   deadlineBuffer?: number
   gasPrice?: number
   gasLimit?: number
+  rpcEndpoint?: string
 }
 
 export type OnUpdate = (tx: ObservedTx, status: TxStatus, receipt?: TxReceipt) => void
@@ -46,15 +48,13 @@ export type TokenDetails = {
   hash: string
   symbol: string
   decimals: number
-  whitelisted: boolean // is in default token list
+  registered: boolean // is in default token list
+  whitelisted: boolean // is a verified token
 }
 
 export type ContractState = {
-  _balance: string
   balances: { [key in string]?: { [key2 in string]?: string } }
   output_after_fee: string
-  owner: string
-  pending_owner: string
   pools: { [key in string]?: { arguments: ReadonlyArray<string> } }
   total_contributions: { [key in string]?: string }
 }
@@ -91,6 +91,7 @@ type RPCBalanceResponse = { balance: string; nonce: string }
 
 export class Zilswap {
   /* Internals */
+  private readonly rpcEndpoint: string
   private readonly zilliqa: Zilliqa // zilliqa sdk
   private readonly walletProvider?: WalletProvider // zilpay
   private readonly tokens: { [key in string]: string } // symbol => hash mappings
@@ -127,14 +128,15 @@ export class Zilswap {
    * @param options a set of Options that will be used for all txns.
    */
   constructor(readonly network: Network, walletProviderOrKey?: WalletProvider | string, options?: Options) {
+    this.rpcEndpoint = options?.rpcEndpoint || APIS[network]
     if (typeof walletProviderOrKey === 'string') {
-      this.zilliqa = new Zilliqa(APIS[network])
+      this.zilliqa = new Zilliqa(this.rpcEndpoint)
       this.zilliqa.wallet.addByPrivateKey(walletProviderOrKey)
     } else if (walletProviderOrKey) {
-      this.zilliqa = new Zilliqa(APIS[network], walletProviderOrKey.provider)
+      this.zilliqa = new Zilliqa(this.rpcEndpoint, walletProviderOrKey.provider)
       this.walletProvider = walletProviderOrKey
     } else {
-      this.zilliqa = new Zilliqa(APIS[network])
+      this.zilliqa = new Zilliqa(this.rpcEndpoint)
     }
 
     this.contractAddress = CONTRACTS[network]
@@ -385,10 +387,8 @@ export class Zilswap {
     this.checkAppLoadedWithUser()
 
     const token = this.getTokenDetails(tokenID)
-    const tokenState = await token.contract.getState()
-    const allowances = tokenState.allowances || tokenState.allowances_map
-    const userAllowances = allowances[this.appState!.currentUser!] || {}
-    const allowance = new BigNumber(userAllowances[spenderContractHash] || 0)
+    const tokenState = await token.contract.getSubState('allowances', [this.appState!.currentUser!, spenderContractHash])
+    const allowance = new BigNumber(tokenState?.allowances[this.appState!.currentUser!]?.[spenderContractHash] || 0)
     const amount: BigNumber = typeof amountStrOrBN === 'string' ? unitlessBigNumber(amountStrOrBN) : amountStrOrBN
 
 
@@ -1139,9 +1139,27 @@ export class Zilswap {
   }
 
   private async loadTokenList() {
-    const res = await fetch('https://raw.githubusercontent.com/Switcheo/zilswap-token-list/master/tokens.json')
+
+    if (this.network === Network.TestNet) {
+      this.tokens['ZIL'] = 'zil1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9yf6pz'
+      this.tokens['gZIL'] = 'zil1fytuayks6njpze00ukasq3m4y4s44k79hvz8q5'
+      this.tokens['SWTH'] = 'zil1d6yfgycu9ythxy037hkt3phc3jf7h6rfzuft0s'
+      this.tokens['XSGD'] = 'zil10a9z324aunx2qj64984vke93gjdnzlnl5exygv'
+      this.tokens['ZLP'] = 'zil1du93l0dpn8wy40769raza23fjkvm868j9rjehn'
+      this.tokens['PORT'] = 'zil10v5nstu2ff9jsm7074wer6s6xtklh9xga7n8xc'
+      this.tokens['REDC'] = 'zil14jmjrkvfcz2uvj3y69kl6gas34ecuf2j5ggmye'
+      return
+    }
+
+    const res = await fetch('https://api.zilstream.com/tokens')
     const tokens = await res.json()
-    Object.keys(tokens[this.network]).forEach(key => (this.tokens[key] = tokens[this.network][key]))
+
+    interface ZilStreamToken {
+      symbol: string
+      address_bech32: string
+    }
+
+    tokens.forEach((token: ZilStreamToken) => this.tokens[token.symbol] = token.address_bech32)
   }
 
   private async updateBlockHeight(): Promise<void> {
@@ -1151,14 +1169,36 @@ export class Zilswap {
   }
 
   private async updateAppState(): Promise<void> {
-    // Get the contract state
-    const contractState = (await this.contract.getState()) as ContractState
-
     // Get user address
     const currentUser = this.walletProvider
       ? // ugly hack for zilpay provider
-        this.walletProvider.wallet.defaultAccount.base16.toLowerCase()
+      this.walletProvider.wallet.defaultAccount.base16.toLowerCase()
       : this.zilliqa.wallet.defaultAccount?.address?.toLowerCase() || null
+
+    // Get the contract state
+    const requests: BatchRequest[] = []
+    const address = this.contractHash.replace('0x', '')
+    requests.push({ id: '1', method: 'GetSmartContractSubState', params: [address, 'output_after_fee', []], jsonrpc: '2.0' })
+    requests.push({ id: '2', method: 'GetSmartContractSubState', params: [address, 'pools', []], jsonrpc: '2.0' })
+    requests.push({ id: '3', method: 'GetSmartContractSubState', params: [address, 'total_contributions', []], jsonrpc: '2.0' })
+    const result = await sendBatchRequest(this.rpcEndpoint, requests)
+    const contractState = Object.values(result).reduce((a, i) => ({ ...a, ...i }), { balances: {} }) as ContractState
+
+    if (currentUser) {
+      const requests2: BatchRequest[] = []
+      Object.keys(contractState.pools).forEach(token => {
+        requests2.push({
+          id: token,
+          method: 'GetSmartContractSubState',
+          params: [address, 'balances', [token, currentUser]],
+          jsonrpc: '2.0',
+        })
+      })
+      const result2 = await sendBatchRequest(this.rpcEndpoint, requests2)
+      Object.entries(result2).forEach(([token, mapOrNull]) => {
+        contractState.balances[token] = mapOrNull ? mapOrNull.balances[token] : {}
+      })
+    }
 
     // Get id of tokens that have liquidity pools
     const poolTokenHashes = Object.keys(contractState.pools)
@@ -1304,14 +1344,29 @@ export class Zilswap {
   }
 
   private async fetchContractInit(contract: Contract): Promise<any> {
+    // try to use cache first
+    const lsCacheKey = `contractInit:${contract.address!}`
+    if (isLocalStorageAvailable()) {
+      const result = localStorage.getItem(lsCacheKey)
+      if (result && result !== '') {
+        try {
+          return JSON.parse(result)
+        } catch (e) {
+          console.error(e)
+        }
+      }
+    }
     // motivation: workaround api.zilliqa.com intermittent connection issues.
     try {
-      return await contract.getInit()
+      const init = await contract.getInit()
+      if (isLocalStorageAvailable()) {
+        localStorage.setItem(lsCacheKey, JSON.stringify(init))
+      }
+      return init
     } catch (error) {
       if (error?.message === 'Network request failed') {
         // make another fetch attempt after 800ms
-        await new Promise((resolve) => setTimeout(resolve, 800))
-        return await contract.getInit()
+        return this.fetchContractInit(contract)
       } else {
         throw error
       }
@@ -1326,7 +1381,7 @@ export class Zilswap {
     const contract = (this.walletProvider || this.zilliqa).contracts.at(address)
 
     if (hash === ZIL_HASH) {
-      return { contract, address, hash, symbol: 'ZIL', decimals: 12, whitelisted: true }
+      return { contract, address, hash, symbol: 'ZIL', decimals: 12, whitelisted: true, registered: true }
     }
 
     const init = await this.fetchContractInit(contract)
@@ -1334,9 +1389,10 @@ export class Zilswap {
     const decimalStr = init.find((e: Value) => e.vname === 'decimals').value as string
     const decimals = parseInt(decimalStr, 10)
     const symbol = init.find((e: Value) => e.vname === 'symbol').value as string
-    const whitelisted = this.tokens[symbol] === address
+    const registered = this.tokens[symbol] === address
+    const whitelisted = registered && (symbol === 'ZWAP' || symbol === 'XSGD' || symbol === 'gZIL') // TODO: make an actual whitelist
 
-    return { contract, address, hash, symbol, decimals, whitelisted }
+    return { contract, address, hash, symbol, decimals, whitelisted, registered }
   }
 
   private async checkAllowedBalance(token: TokenDetails, amount: BigNumber, contractHash: string = this.contractHash) {
@@ -1354,17 +1410,23 @@ export class Zilswap {
       }
     } else {
       // Check zrc-2 balance
-      const tokenState = await token.contract.getState()
-      const balances = tokenState.balances || tokenState.balances_map
-      const tokenBalance = new BigNumber(balances[user] || 0)
-      if (tokenBalance.lt(amount)) {
+      const requests: BatchRequest[] = []
+      const address = token.contract.address!.replace('0x', '')
+      requests.push({ id: 'balances', method: 'GetSmartContractSubState', params: [address, 'balances', [user!]], jsonrpc: '2.0' })
+      requests.push({
+        id: 'allowances',
+        method: 'GetSmartContractSubState',
+        params: [address, 'allowances', [user!, contractHash]],
+        jsonrpc: '2.0',
+      })
+      const result = await sendBatchRequest(this.rpcEndpoint, requests)
+      const balance = new BigNumber(result.balances?.balances[user] || 0)
+      if (balance.lt(amount)) {
         throw new Error(`Insufficent tokens in wallet.
         Required: ${this.toUnit(token.hash, amount.toString()).toString()},
-        have: ${this.toUnit(token.hash, tokenBalance.toString()).toString()}.`)
+        have: ${this.toUnit(token.hash, balance.toString()).toString()}.`)
       }
-      const allowances = tokenState.allowances || tokenState.allowances_map
-      const userAllowances = allowances[user!] || {}
-      const allowance = new BigNumber(userAllowances[contractHash] || 0)
+      const allowance = new BigNumber(result.allowances?.allowances[user]?.[contractHash] || 0)
       if (allowance.lt(amount)) {
         throw new Error(`Tokens need to be approved first.
         Required: ${this.toUnit(token.hash, amount.toString()).toString()},
@@ -1415,12 +1477,4 @@ export class Zilswap {
       throw new Error(`MaxExchangeRateChange ${maxExchangeRateChange} must be an integer between 0 and ${BASIS + 1}.`)
     }
   }
-}
-
-const unitlessBigNumber = (str: string): BigNumber => {
-  const bn = new BigNumber(str)
-  if (!bn.integerValue().isEqualTo(bn)) {
-    throw new Error(`number ${bn} should be unitless (no decimals).`)
-  }
-  return bn
 }

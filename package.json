@@ -1,6 +1,6 @@
 {
   "name": "zilswap-sdk",
-  "version": "1.0.8",
+  "version": "1.2.2",
   "description": "Zilswap TypeScript SDK",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -34,7 +34,6 @@
     "@types/node": "^13.13.5",
     "@types/websocket": "^1.0.0",
     "prettier": "^2.0.5",
-    "tslint": "^6.1.2",
     "tslint-config-prettier": "^1.18.0"
   }
 }
